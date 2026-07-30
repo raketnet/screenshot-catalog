@@ -1,0 +1,27 @@
+# Build output
+target/
+*.class
+
+# Local H2 database files created by running the app
+data/
+*.mv.db
+*.trace.db
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# UI dependencies (not the built output - that's committed so `mvn package`
+# alone produces a working jar without needing Node installed)
+ui/node_modules/

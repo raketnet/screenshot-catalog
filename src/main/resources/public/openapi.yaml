@@ -1,0 +1,702 @@
+openapi: 3.0.3
+info:
+  title: Screenshot Catalog API
+  description: >
+    A visual regression / screenshot intelligence system for Swing HMI
+    screenshots laid out as Repository/Release_x.y/Component/Window/*.png -
+    the folder tree itself is the metadata, so no filename convention is
+    required. Supports search by release/component/window/filename/date/
+    resolution/size/hash, release-to-release comparison (new/changed/
+    removed/unchanged), exact-duplicate detection (SHA-256), and
+    near-duplicate/similarity search (perceptual hash).
+
+
+    Authentication is optional and off by default (see SCREENSHOT_API_KEY in
+    the README). If the server has it enabled, every request below needs an
+    X-API-Key header - use the Authorize button above.
+  version: "2.7.0"
+servers:
+  - url: /api
+
+paths:
+  /scan:
+    post:
+      summary: Scan a Repository/ root and import/update every screenshot found under it
+      description: >
+        Expects Repository/Release_x.y/Component/Window/*.{png,jpg,...}.
+        Async by default: returns 202 immediately and runs the scan on a
+        background thread - poll GET /scan/status for progress. Add
+        ?sync=true to block and get the full ScanResult back directly
+        instead (the old behavior) - still goes through the same
+        single-scan guard, so it can't race with an async-triggered scan.
+        If a scan is already running, returns 409 rather than queuing or
+        racing.
+      parameters:
+        - name: sync
+          in: query
+          required: false
+          description: If true/1, block until the scan finishes and return the full ScanResult instead of a 202.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScanRequest'
+      responses:
+        '202':
+          description: Scan started (default, async mode)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanStartedResponse'
+        '200':
+          description: Scan result summary (only with ?sync=true)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanResult'
+        '400':
+          description: Invalid or unreadable root path, or (with ?sync=true) the scan failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Root path is outside the configured allowed scan roots
+        '409':
+          description: A scan is already in progress
+
+  /scan/status:
+    get:
+      summary: Current scan progress/status - poll this while a scan (started without ?sync=true) is running
+      responses:
+        '200':
+          description: Progress snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanProgressSnapshot'
+
+  /releases:
+    get:
+      summary: List every known release, in release order
+      responses:
+        '200':
+          description: Release names
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /releases/{release}/components:
+    get:
+      summary: List every component known within a release
+      parameters:
+        - $ref: '#/components/parameters/ReleaseParam'
+      responses:
+        '200':
+          description: Component names
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /releases/{release}/components/{component}/windows:
+    get:
+      summary: List every window known within a component of a release
+      parameters:
+        - $ref: '#/components/parameters/ReleaseParam'
+        - name: component
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Window names
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /search:
+    get:
+      summary: Fuzzy multi-facet search across the whole catalog
+      description: Every parameter is optional and independent.
+      parameters:
+        - name: release
+          in: query
+          schema: { type: string }
+        - name: component
+          in: query
+          schema: { type: string }
+        - name: window
+          in: query
+          schema: { type: string }
+        - name: fileName
+          in: query
+          schema: { type: string }
+        - name: dateFrom
+          in: query
+          description: ISO local date-time, e.g. 2026-01-01T00:00:00
+          schema: { type: string, format: date-time }
+        - name: dateTo
+          in: query
+          schema: { type: string, format: date-time }
+        - name: minWidth
+          in: query
+          schema: { type: integer }
+        - name: maxWidth
+          in: query
+          schema: { type: integer }
+        - name: minHeight
+          in: query
+          schema: { type: integer }
+        - name: maxHeight
+          in: query
+          schema: { type: integer }
+        - name: minSizeBytes
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: maxSizeBytes
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: sha256
+          in: query
+          description: Exact hash match - useful for "find every copy of this exact image"
+          schema: { type: string }
+        - name: q
+          in: query
+          description: Free-text match against component, window name, and file name
+          schema: { type: string }
+        - name: swingClass
+          in: query
+          description: Exact match, e.g. "JTable" - only matches screenshots with sidecar component metadata
+          schema: { type: string }
+        - name: theme
+          in: query
+          schema: { type: string }
+        - name: plafVersion
+          in: query
+          schema: { type: string }
+        - name: locale
+          in: query
+          schema: { type: string }
+        - name: windowClass
+          in: query
+          schema: { type: string }
+        - name: exact
+          in: query
+          description: >
+            If true, release/component/window/fileName match exactly
+            (case-sensitive) instead of the default case-insensitive
+            substring match. Faster for callers that already have a
+            complete, known value (e.g. picked from a prior /api/releases
+            or /api/.../windows response) rather than user-typed partial text.
+          schema: { type: boolean, default: false }
+        - name: limit
+          in: query
+          description: Max results per page. Default 100, capped at 500.
+          schema: { type: integer, default: 100 }
+        - name: offset
+          in: query
+          description: Number of results to skip. Default 0.
+          schema: { type: integer, default: 0 }
+      responses:
+        '200':
+          description: One page of matching screenshots, plus the total match count
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagedScreenshots'
+
+  /swing-classes:
+    get:
+      summary: Every distinct Swing class seen across the catalog (for a search UI's autocomplete)
+      responses:
+        '200':
+          description: Class names, e.g. ["JButton", "JTable", "JTextField"]
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: string }
+
+  /screenshots/{id}:
+    get:
+      summary: Full detail view - screenshot facts plus optional Swing metadata and component list
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Screenshot detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScreenshotDetail'
+        '404':
+          description: No screenshot with that id
+
+  /compare/releases:
+    get:
+      summary: Compare every screenshot in one release against another - the data behind the automatic release report
+      description: >
+        Screenshots are matched between releases by (component, window, file name).
+        Present in `to` only -> NEW. Present in `from` only -> REMOVED. Present in
+        both with different SHA-256 -> CHANGED (diffed with pixel/pHash/SSIM).
+        Present in both with identical SHA-256 -> UNCHANGED. Each change also
+        carries its review status (see /changes/status) - PENDING unless a
+        human has explicitly approved or rejected it. If `status` is given,
+        both the `changes` list and the summary counts are narrowed to just
+        that status, so "?status=pending" is an accurate "what's left to
+        review" view rather than unfiltered totals.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          description: Max entries in `changes` per page. Default 200, capped at 1000.
+          schema: { type: integer, default: 200 }
+        - name: offset
+          in: query
+          description: Number of `changes` entries to skip. Default 0.
+          schema: { type: integer, default: 0 }
+        - name: status
+          in: query
+          description: Narrow both the list and the summary counts to just this review status.
+          schema: { type: string, enum: [PENDING, APPROVED, REJECTED] }
+      responses:
+        '200':
+          description: Full comparison result, with one page of `changes`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseCompareResult'
+
+  /changes/status:
+    get:
+      summary: Current review status for a screenshot pair (defaults to PENDING if never reviewed)
+      parameters:
+        - name: leftId
+          in: query
+          schema: { type: integer, format: int64 }
+        - name: rightId
+          in: query
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Review status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeAcknowledgment'
+    post:
+      summary: Record a human review decision (approve, reject, or reset to pending) on a screenshot pair
+      description: >
+        The same pair is recognized whether it came from a release comparison
+        (ScreenshotChange.fromId/toId) or an ad-hoc /diff call
+        (DiffSummary.leftId/rightId) - both read and write through this same
+        table. Exactly one of leftId/rightId may be omitted, for a NEW or
+        REMOVED screenshot with nothing to pair it against; both cannot be
+        omitted. Re-posting for the same pair overwrites the previous
+        decision rather than creating a duplicate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                leftId: { type: integer, format: int64, nullable: true }
+                rightId: { type: integer, format: int64, nullable: true }
+                status: { type: string, enum: [PENDING, APPROVED, REJECTED] }
+                note: { type: string, nullable: true }
+                acknowledgedBy: { type: string, nullable: true, description: Optional - who made the call }
+      responses:
+        '200':
+          description: The stored decision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeAcknowledgment'
+        '400':
+          description: Both leftId and rightId were null, or status was not one of PENDING/APPROVED/REJECTED
+
+  /reports/release:
+    get:
+      summary: The automatic release report - same comparison as /compare/releases, rendered as a standalone HTML page
+      description: >
+        Includes summary counts, newly introduced components/windows, and
+        thumbnail previews of every changed/new/removed screen (most
+        significant pixel-diff changes first, capped at 200 shown - use
+        /compare/releases with limit/offset for the rest), with links to
+        each screenshot and its highlighted diff image, and a Print/Save-as-PDF
+        button (browser-native print-to-PDF, not server-side PDF generation).
+        Self-contained HTML meant to be viewed, printed, or saved - images
+        are linked via /api/images/{id} and /api/diff/image, not embedded,
+        so a saved copy only renders correctly while pointed at a server
+        that still has those ids.
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string }
+        - name: download
+          in: query
+          required: false
+          description: If present, sets Content-Disposition so the browser saves the report instead of viewing it inline
+          schema: { type: string }
+      responses:
+        '200':
+          description: HTML report
+          content:
+            text/html:
+              schema: { type: string }
+
+  /diff:
+    get:
+      summary: Full diff (pixel + perceptual hash + SSIM) between two arbitrary cataloged screenshots
+      parameters:
+        - name: leftId
+          in: query
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: rightId
+          in: query
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Diff summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiffSummary'
+        '404':
+          description: One or both ids not found
+
+  /diff/image:
+    get:
+      summary: Render a visual diff image (changed pixels highlighted in magenta)
+      parameters:
+        - name: leftId
+          in: query
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: rightId
+          in: query
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: PNG diff image
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        '422':
+          description: Dimensions differ - no pixel diff image could be rendered
+        '404':
+          description: One or both ids not found
+
+  /similar/{id}:
+    get:
+      summary: Find screenshots perceptually similar to the given one (near-duplicate search)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: maxDistance
+          in: query
+          description: Max perceptual-hash Hamming distance (0-63). Default 8.
+          schema: { type: integer, default: 8 }
+      responses:
+        '200':
+          description: Similar screenshots, catalog-wide
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Screenshot'
+        '404':
+          description: No screenshot with that id
+
+  /duplicates:
+    get:
+      summary: Exact-duplicate groups (identical SHA-256) within one release
+      parameters:
+        - name: release
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Duplicate groups
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DuplicateGroup'
+
+  /images/{id}:
+    get:
+      summary: Stream the raw, full-resolution image bytes for one cataloged screenshot
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+      responses:
+        '200':
+          description: Image bytes
+          content:
+            image/*:
+              schema: { type: string, format: binary }
+        '404':
+          description: No screenshot with that id
+
+  /images/{id}/thumbnail:
+    get:
+      summary: A downscaled PNG preview, for grid/timeline browsing rather than full inspection
+      description: >
+        Cached in memory, keyed by the screenshot's SHA-256 content hash - so
+        the cache can never serve stale content after a rescan changes a
+        file, and byte-identical duplicate files automatically share one
+        cached thumbnail. Images already smaller than maxDimension are
+        returned as-is (never upscaled). Aggressively cacheable client-side
+        too (Cache-Control: immutable) since the content-addressed key never
+        changes for the same bytes.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer, format: int64 }
+        - name: maxDimension
+          in: query
+          description: Longer side is scaled to at most this many pixels. Default 480, clamped to [32, 800].
+          schema: { type: integer, default: 480 }
+      responses:
+        '200':
+          description: PNG thumbnail bytes
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+        '404':
+          description: No screenshot with that id
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Only enforced if the server was started with SCREENSHOT_API_KEY set - unset by default.
+
+  parameters:
+    ReleaseParam:
+      name: release
+      in: path
+      required: true
+      schema: { type: string }
+
+  schemas:
+    ScanRequest:
+      type: object
+      required: [rootPath]
+      properties:
+        rootPath:
+          type: string
+          example: "/data/Repository"
+
+    ScanResult:
+      type: object
+      properties:
+        filesScanned: { type: integer }
+        imported: { type: integer }
+        skipped: { type: integer }
+        removedMissing:
+          type: integer
+          description: Screenshots removed from the catalog because their file no longer exists on disk
+        warnings:
+          type: array
+          items: { type: string }
+        perRelease:
+          type: object
+          description: Screenshots imported per release name
+          additionalProperties: { type: integer }
+
+    ScanStartedResponse:
+      type: object
+      properties:
+        started: { type: boolean }
+        message: { type: string }
+
+    ScanProgressSnapshot:
+      type: object
+      properties:
+        status: { type: string, enum: [IDLE, RUNNING, COMPLETED, FAILED] }
+        rootPath: { type: string, nullable: true }
+        startedAt: { type: string, format: date-time, nullable: true }
+        finishedAt: { type: string, format: date-time, nullable: true }
+        currentRelease: { type: string, nullable: true }
+        currentComponent: { type: string, nullable: true }
+        filesScanned: { type: integer }
+        imported: { type: integer }
+        skipped: { type: integer }
+        result:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/ScanResult' }]
+          description: Only set once status is COMPLETED
+        errorMessage:
+          type: string
+          nullable: true
+          description: Only set if status is FAILED
+
+    SwingMetadata:
+      type: object
+      description: Present only if a sidecar JSON file existed next to the screenshot at scan time
+      properties:
+        windowClass: { type: string, nullable: true }
+        theme: { type: string, nullable: true }
+        plafVersion: { type: string, nullable: true }
+        locale: { type: string, nullable: true }
+        screenWidth: { type: integer, nullable: true }
+        screenHeight: { type: integer, nullable: true }
+
+    SwingComponentInfo:
+      type: object
+      properties:
+        componentId: { type: string, nullable: true }
+        swingClass: { type: string }
+
+    ScreenshotDetail:
+      type: object
+      properties:
+        screenshot:
+          $ref: '#/components/schemas/Screenshot'
+        metadata:
+          $ref: '#/components/schemas/SwingMetadata'
+        components:
+          type: array
+          items:
+            $ref: '#/components/schemas/SwingComponentInfo'
+
+    Screenshot:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        release: { type: string }
+        component: { type: string }
+        windowName: { type: string }
+        variant: { type: string, nullable: true, description: "Heuristically parsed from file name, e.g. 'dark' from login_dark.png" }
+        fileName: { type: string }
+        filePath: { type: string }
+        width: { type: integer }
+        height: { type: integer }
+        fileSizeBytes: { type: integer, format: int64 }
+        sha256: { type: string }
+        pHash: { type: integer, format: int64 }
+        capturedAt: { type: string, format: date-time }
+
+    PagedScreenshots:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Screenshot'
+        total: { type: integer, description: Total matches across all pages }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    DiffSummary:
+      type: object
+      properties:
+        leftId: { type: integer, format: int64 }
+        rightId: { type: integer, format: int64 }
+        dimensionsMatch: { type: boolean }
+        pixelDifferencePercentage: { type: number, format: double, nullable: true }
+        pHashDistance: { type: integer }
+        pHashSimilarityPercent: { type: number, format: double }
+        ssimScore: { type: number, format: double }
+        note: { type: string, nullable: true, description: Diff-engine note (e.g. "dimensions differ") - distinct from reviewNote }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED], description: Human review status for this pair - PENDING unless explicitly set via POST /changes/status }
+        reviewNote: { type: string, nullable: true, description: The note attached when this pair was last reviewed }
+
+    ScreenshotChange:
+      type: object
+      properties:
+        component: { type: string }
+        windowName: { type: string }
+        fileName: { type: string }
+        changeType: { type: string, enum: [NEW, REMOVED, CHANGED, UNCHANGED] }
+        fromId: { type: integer, format: int64, nullable: true }
+        toId: { type: integer, format: int64, nullable: true }
+        pixelDifferencePercentage: { type: number, format: double, nullable: true }
+        ssimScore: { type: number, format: double, nullable: true }
+        pHashSimilarityPercent: { type: number, format: double, nullable: true }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED] }
+        reviewNote: { type: string, nullable: true }
+
+    ChangeAcknowledgment:
+      type: object
+      properties:
+        leftId: { type: integer, format: int64, nullable: true }
+        rightId: { type: integer, format: int64, nullable: true }
+        status: { type: string, enum: [PENDING, APPROVED, REJECTED] }
+        note: { type: string, nullable: true }
+        acknowledgedBy: { type: string, nullable: true }
+        acknowledgedAt: { type: string, format: date-time, nullable: true }
+
+    ReleaseCompareResult:
+      type: object
+      properties:
+        fromRelease: { type: string }
+        toRelease: { type: string }
+        totalInToRelease: { type: integer }
+        newCount: { type: integer, description: Total for the current status filter (or overall, if none), not page-scoped }
+        removedCount: { type: integer, description: Total for the current status filter (or overall, if none), not page-scoped }
+        changedCount: { type: integer, description: Total for the current status filter (or overall, if none), not page-scoped }
+        unchangedCount: { type: integer, description: Total for the current status filter (or overall, if none), not page-scoped }
+        changesTotal: { type: integer, description: newCount + removedCount + changedCount + unchangedCount }
+        changesLimit: { type: integer }
+        changesOffset: { type: integer }
+        changes:
+          type: array
+          description: One page only - see changesTotal/changesLimit/changesOffset
+          items:
+            $ref: '#/components/schemas/ScreenshotChange'
+
+    DuplicateGroup:
+      type: object
+      properties:
+        sha256: { type: string }
+        count: { type: integer }
+        screenshots:
+          type: array
+          items:
+            $ref: '#/components/schemas/Screenshot'
+
+    ErrorResponse:
+      type: object
+      properties:
+        error: { type: string }
