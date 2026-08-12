@@ -1055,14 +1055,19 @@ function LiveCompareView({ frames, compareIds, setCompareIds, diff, sliderPos, s
         </a>
       </div>
       {diff ? <ScorePanel score={diff} sev={sev} /> : <LoadingRow label="Computing diff…" />}
-      {diff && <ReviewPanel diff={diff} onAcknowledge={onAcknowledge} busy={acknowledging} />}
+      {diff && <ReviewPanel key={`${diff.leftId}:${diff.rightId}`} diff={diff} onAcknowledge={onAcknowledge} busy={acknowledging} />}
     </div>
   );
 }
 
 /** Approve/reject/reset controls for the pair currently shown in Compare view. */
 function ReviewPanel({ diff, onAcknowledge, busy }) {
-  const [note, setNote] = useState("");
+  // Initialized from diff.reviewNote, not blank - re-opening an already-reviewed pair should show
+  // its existing note, not an empty box. Safe to only do this on mount (not sync on every diff
+  // change) because the parent now remounts this component (via a key) whenever the pair changes -
+  // without that key, this component would be reused across different pairs and this initial value
+  // would only ever apply to the very first pair ever compared, not each new one.
+  const [note, setNote] = useState(diff.reviewNote || "");
   const status = diff.status || "PENDING";
 
   return (

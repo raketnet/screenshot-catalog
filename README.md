@@ -121,7 +121,20 @@ mvn clean package
 java -jar target/screenshot-catalog.jar
 ```
 
-| Env var                    | Default                                              |
+Every setting below can be set three ways, in this order of precedence
+(highest wins): an **environment variable**, a value in a **properties
+file**, or the built-in default. The properties file is looked for at
+`./config.properties` (relative to wherever you launch the jar from) unless
+`SCREENSHOT_CONFIG_FILE` points somewhere else - it's entirely optional, and
+if it doesn't exist everything just falls back to env vars/defaults exactly
+as before. Copy `config.properties.example` (in the project root) to
+`config.properties` and uncomment what you need - same key names either way,
+e.g. `SCREENSHOT_PORT=8080`. The properties file is for settings you want to
+keep for a machine or check into version control; env vars are for
+overriding just one thing for one run (a container, CI, etc.) without
+touching the file.
+
+| Env var / properties key    | Default                                              |
 |-----------------------------|-------------------------------------------------------|
 | `SCREENSHOT_DB_URL`         | `jdbc:h2:file:./data/screenshot-catalog;AUTO_SERVER=TRUE` |
 | `SCREENSHOT_DB_USER`        | `sa`                                                  |
@@ -131,6 +144,10 @@ java -jar target/screenshot-catalog.jar
 | `SCREENSHOT_API_KEY`        | *(unset = auth disabled)*                             |
 | `SCREENSHOT_ALLOWED_ORIGINS`| *(unset = only localhost + Vite's default dev port)*  |
 | `SCREENSHOT_RATE_LIMIT_PER_MINUTE` | `300` per client IP, on `/api/scan`, `/api/diff`, `/api/diff/image` |
+
+`SCREENSHOT_CONFIG_FILE` itself is env-var-only (it has to be, to know which
+file to read before any properties-file value could apply) - it's not a
+properties-file key.
 
 Swagger UI: `http://localhost:7070/swagger-ui.html`
 
